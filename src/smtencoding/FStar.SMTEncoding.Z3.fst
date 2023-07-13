@@ -339,7 +339,7 @@ let smt_output_sections (log_file:option string) (r:Range.range) (lines:list str
      smt_statistics = statistics;
      smt_labels = labels}
 
-let doZ3Exe (log_file:_) (r:Range.range) (fresh:bool) (input:string) (label_messages:error_labels) : z3status * z3statistics =
+let doZ3Exe (log_file:_) (r:Range.range) (fresh:bool) (queryid:string) (input:string) (label_messages:error_labels) : z3status * z3statistics =
   let parse (z3out:string) =
     let lines = String.split ['\n'] z3out |> List.map BU.trim_string in
     let smt_output = smt_output_sections log_file r lines in
@@ -419,7 +419,12 @@ let doZ3Exe (log_file:_) (r:Range.range) (fresh:bool) (input:string) (label_mess
     else
       (!bg_z3_proc).ask input
   in
-  parse (BU.trim_string stdout)
+  let res = parse (BU.trim_string stdout)
+  in begin
+      ignore (query_logging.append_to_log ("; QUERY ID: " ^ queryid));
+      ignore (query_logging.append_to_log ("; STATUS: " ^ fst (status_string_and_errors res.z3result_status)));
+      res
+    end
 
 let z3_options = BU.mk_ref
     "(set-option :global-decls false)\n\
@@ -584,7 +589,7 @@ let cache_hit
     else
         None
 
-let z3_job (log_file:_) (r:Range.range) fresh (label_messages:error_labels) input qhash () : z3result =
+let z3_job (log_file:_) (r:Range.range) fresh (label_messages:error_labels) (queryid:string) input qhash () : z3result =
   //This code is a little ugly:
   //We insert a profiling call to accumulate total time spent in Z3
   //But, we also record the time of this particular call so that we can
@@ -596,7 +601,7 @@ let z3_job (log_file:_) (r:Range.range) fresh (label_messages:error_labels) inpu
     Profiling.profile
       (fun () ->
         try
-          BU.record_time (fun () -> doZ3Exe log_file r fresh input label_messages)
+          let out = BU.record_time (fun () -> doZ3Exe log_file r fresh queryid input label_messages)
         with e ->
           refresh(); //refresh the solver but don't handle the exception; it'll be caught upstream
           raise e)
@@ -630,14 +635,20 @@ let ask
     let input, qhash, log_file_name = mk_input fresh theory in
 
     let just_ask () =
-      let res = z3_job log_file_name r fresh label_messages input qhash () in
+      let res = z3_job log_file_name r fresh label_messages queryid input qhash () in
       (* If we are logging, write some more information to the
       smt2 file, such as the result of the query and the new unsat
       core generated. *)
+      (*
       begin match log_file_name with
       | Some fname ->
+	(* 
+ 	  By this point, the log file could have been closed if the job was killed.
+          So we ask the logger to /reopen/ the file handle to the old log file.
+          This is pretty terrible in terms of control flow.
+        *)
         ignore (query_logging.append_to_log ("; QUERY ID: " ^ queryid));
-        ignore (query_logging.append_to_log ("; STATUS: " ^ fst (status_string_and_errors res.z3result_status)));
+        ignore (query_logging.append_to_log ("; STATUS: " ^ fst (status_string_and_errors res.z3result_status))); xx
         begin match res.z3result_status with
         | UNSAT (Some core) ->
           ignore (query_logging.append_to_log ("; UNSAT CORE GENERATED: " ^ String.concat ", " core))
@@ -645,6 +656,7 @@ let ask
         end
       | None -> ()
       end;
+      *)
       res
     in
     if fresh then
